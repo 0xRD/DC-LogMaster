@@ -77,12 +77,29 @@ function Update-Categories {
         [int]      $Value
     )
 
-    # Normalisation des noms de catégories
-    $catsList = ($Cats -join ',') -split '[, ]+' | ForEach-Object { $_.Trim().ToLowerInvariant() }
-    $all      = Get-Categories
-    $invalid  = $catsList | Where-Object { -not $all.ContainsKey($_) }
+    # Table explicite RegistryPath → nom Advanced Audit Policy
+    $advSubCatMap = @{
+        'AuditLogon'                          = 'Logon'
+        'AuditLogoff'                         = 'Logoff'
+        'AuditKerberosAuthentication'         = 'Kerberos Authentication Service'
+        'AuditKerberosServiceTicketOperations'= 'Kerberos Service Ticket Operations'
+        'AuditKerberosPreAuth'                = 'Kerberos Pre-auth'
+        'AuditNTLMAuthentication'             = 'NTLM Authentication'
+        'AuditDirectoryServiceChanges'        = 'Directory Service Changes'
+        'AuditKDCPolicyChange'                = 'Authentication Policy Change'
+        'AuditKDCService'                     = 'Authentication Policy Change'
+        'AuditUserAccountManagement'          = 'User Account Management'
+        'AuditSecurityGroupManagement'        = 'Security Group Management'
+        'AuditDistributionGroupManagement'    = 'Distribution Group Management'
+        'AuditApplicationGroupManagement'     = 'Application Group Management'
+    }
+
+    # --- Validation des catégories ---
+    $catsList    = ($Cats -join ',') -split '[, ]+' | %{ $_.Trim().ToLowerInvariant() }
+    $all         = Get-Categories
+    $invalid     = $catsList | Where-Object{ -not $all.ContainsKey($_) }
     if ($invalid) {
-        Write-Host "Unknown category(ies): $($invalid -join ', ')" -ForegroundColor Red
+        Write-Host "Unknown category(s): $($invalid -join ', ')" -ForegroundColor Red
         Show-Available; return
     }
 
@@ -94,48 +111,44 @@ function Update-Categories {
         $color = $all[$cat].Color
         foreach ($id in $all[$cat].IDs) {
             $map    = Get-AuditMapping -EventId $id
-            $action = if ($Value -eq 1) { 'Enable' } else { 'Disable' }
-            $mode   = if ($Value -eq 1) { 'enable' } else { 'disable' }
+            $action = if ($Value -eq 1){ 'Enable' } else { 'Disable' }
+            $mode   = if ($Value -eq 1){ 'enable' } else { 'disable' }
 
-            if ($PSCmdlet.ShouldProcess(
-                    "GPO '$gpo' + local registry + audit policy",
-                    "$action Event $id ($($map.SubCategory))"
-                )) {
-
-                # 1) Modifier la GPO pour diffusion aux DC
+            if ($PSCmdlet.ShouldProcess("GPO '$gpo' + registry + auditpol", "$action Event $id ($($map.SubCategory))")) {
+                # 1) GPO
                 Set-GPRegistryValue `
-                    -Name  $gpo `
-                    -Key   'HKLM\System\CurrentControlSet\Control\Lsa' `
+                    -Name      $gpo `
+                    -Key       'HKLM\System\CurrentControlSet\Control\Lsa' `
                     -ValueName $map.RegistryPath `
-                    -Type  DWord `
-                    -Value $Value
+                    -Type      DWord `
+                    -Value     $Value
 
-                # 2) Appliquer immédiatement en local pour Show-Current
+                # 2) Registre local
                 Set-ItemProperty `
                     -Path  $localRegKey `
                     -Name  $map.RegistryPath `
                     -Type  DWord `
                     -Value $Value
 
-                Write-Host "$action d Event $id ($($map.SubCategory))" -ForegroundColor $color
+                Write-Host "$action d'Event $id ($($map.SubCategory))" -ForegroundColor $color
 
-                # 3) Appliquer l’Advanced Audit Policy via auditpol
-                & auditpol /set /subcategory:"$($map.SubCategory)" `
-                           /success:$mode /failure:$mode | Out-Null
-                Write-Host "Auditpol appliqué sur '$($map.SubCategory)' : $mode" `
-                           -ForegroundColor $color
+                # 3) Advanced Audit Policy
+                $advSubCat = $advSubCatMap[$map.RegistryPath]
+                if (-not $advSubCat) {
+                    # en dernier recours, on tombe sur le SubCategory d'origine
+                    $advSubCat = $map.SubCategory
+                }
+                & auditpol /set /subcategory:"$advSubCat" /success:$mode /failure:$mode | Out-Null
+                Write-Host "auditpol appliqué sur '$advSubCat' : $mode" -ForegroundColor $color
             }
         }
     }
 
-    Write-Host "`nApplied categories: $($catsList -join ', ') on GPO + local registry + audit policy" `
-              -ForegroundColor Cyan
+    Write-Host "`nApplied categories: $($catsList -join ', ') on GPO + registry + auditpol" -ForegroundColor Cyan
 
-    # Forcer la mise à jour de la stratégie
+    # 4) Forcer application de la GPO
     Invoke-GPUpdate -Force | Out-Null
 }
-
-
 
 function Get-AuditMapping {
     param([int]$EventId)
