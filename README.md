@@ -13,9 +13,6 @@
 5. [Available Categories](#available-categories)  
 6. [Internal Workflow](#internal-workflow)  
 7. [Examples](#examples)  
-8. [Contributing](#contributing)  
-9. [License](#license)  
-
 ---
 
 ## Requirements
@@ -30,7 +27,7 @@
 
 1. Clone or download this repository:  
    ```bash
-   git clone https://github.com/YourUsername/DC-LogMaster.git
+   git clone https://github.com/0xRD/DC-LogMaster.git
    cd DC-LogMaster
    ```
 2. Open PowerShell as Administrator.  
