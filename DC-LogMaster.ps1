@@ -4,90 +4,108 @@
 .DESCRIPTION
     Configures advanced audit policy on a Domain Controller using auditpol with GUIDs,
     eliminating language/localization issues. Registry writes have been removed; only
-    advanced audit policy via auditpol is used.
+    advanced audit policy via auditpol is used. Show-Current now queries auditpol state.
 .TO DO
-    Ensure the GUIDs in $advSubCatGuidMap match your environment.
-    To list subcategory GUIDs, run:
-        auditpol /list /subcategory:* /format:csv
+    Ensure the GUIDs in $AdvSubCatGuidMap match your environment.
+    To export all subcategory GUIDs, run:
+        auditpol /list /subcategory:* /format:csv | Out-File C:\temp\auditpol_subcats.csv -Encoding UTF8
 #>
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
-    [alias('h','?')][switch]   $Help,
-    [switch]                  $ShowCurrent,
-    [switch]                  $ShowAvailable,
-    [string[]]                $Enable,
-    [string[]]                $Disable
+    [alias('h','?')][switch] $Help,
+    [switch]               $ShowCurrent,
+    [switch]               $ShowAvailable,
+    [string[]]             $Enable,
+    [string[]]             $Disable
 )
 
+# Global GUID map: RegistryPath -> Subcategory GUID (from auditpol export)
+$AdvSubCatGuidMap = @{
+    'AuditLogon'                           = '{0CCE9215-69AE-11D9-BED3-505054503030}'
+    'AuditLogoff'                          = '{0CCE9216-69AE-11D9-BED3-505054503030}'
+    'AuditKerberosAuthentication'          = '{0CCE9242-69AE-11D9-BED3-505054503030}'
+    'AuditKerberosServiceTicketOperations' = '{0CCE9240-69AE-11D9-BED3-505054503030}'
+    'AuditKerberosPreAuth'                 = '{0CCE923F-69AE-11D9-BED3-505054503030}'
+    'AuditNTLMAuthentication'              = '{0CCE921E-69AE-11D9-BED3-505054503030}'
+    'AuditUserAccountManagement'           = '{0CCE9235-69AE-11D9-BED3-505054503030}'
+    'AuditSecurityGroupManagement'         = '{0CCE9237-69AE-11D9-BED3-505054503030}'
+    'AuditDistributionGroupManagement'     = '{0CCE9238-69AE-11D9-BED3-505054503030}'
+    'AuditDirectoryServiceChanges'         = '{0CCE923C-69AE-11D9-BED3-505054503030}'
+    'AuditDirectoryServiceAccess'          = '{0CCE923B-69AE-11D9-BED3-505054503030}'
+    'AuditKDCPolicyChange'                 = '{0CCE9230-69AE-11D9-BED3-505054503030}'
+    'AuditPolicyChange'                    = '{0CCE922F-69AE-11D9-BED3-505054503030}'
+}
+
 function Get-Categories {
-    @{   
-        low      = @{ IDs = @(4624,4625);                   Color = 'Green'   }
-        medium   = @{ IDs = @(4768,4769,4771,4776);         Color = 'Yellow'  }
-        high     = @{ IDs = @(5136,5137,5138,6400,6401);    Color = 'Red'     }
-        accounts = @{ IDs = @(4720,4722,4724,4725,4726);     Color = 'Magenta' }
-        groups   = @{ IDs = @(4727,4728,4732,4756,4757);     Color = 'Cyan'    }
-        kerberos = @{ IDs = @(4768,4769,4771,4772,4776,4777);Color = 'Yellow'  }
+    return @{
+        low           = @{ IDs = @(4624,4625);                                    Color = 'Green'   }
+        medium        = @{ IDs = @(4768,4769,4771,4776);                          Color = 'Yellow'  }
+        high          = @{ IDs = @(5136,5137,5138,6400,6401,4662,4663);           Color = 'Red'     }
+        accounts      = @{ IDs = @(4720,4722,4724,4725,4726);                     Color = 'Magenta' }
+        groups        = @{ IDs = @(4727,4728,4729,4730,4731,4732,4733,4734,4735,4737,4754,4755,4756,4757,4758); Color = 'Cyan'    }
+        kerberos      = @{ IDs = @(4768,4769,4771,4772,4776,4777);                 Color = 'Yellow'  }
+        objectaccess  = @{ IDs = @(4662,4663);                                    Color = 'Blue'    }
+        policychange  = @{ IDs = @(4719);                                          Color = 'Magenta' }
     }
 }
 
 function Show-Help {
-    Write-Host "Usage: .\Set-DCLogging.ps1 [options]" -ForegroundColor Cyan
-    Write-Host "  -h, --help         Show this help message"
-    Write-Host "  -ShowCurrent       Display current audit settings (registry)"
-    Write-Host "  -ShowAvailable     List categories and their Event IDs"
-    Write-Host "  -Enable <cats>     Enable one or more categories"
-    Write-Host "  -Disable <cats>    Disable one or more categories"
-    Write-Host "  -WhatIf            Simulate changes" -ForegroundColor DarkGray
-    Write-Host "`nCategories - verbosity levels:" -ForegroundColor Yellow
-    Write-Host "  low      -> low verbosity (essential events)" -ForegroundColor Green
-    Write-Host "  medium   -> medium verbosity (additional events)" -ForegroundColor Yellow
-    Write-Host "  high     -> high verbosity (more detailed events)" -ForegroundColor Red
-    Write-Host "  accounts -> account management audit" -ForegroundColor Magenta
-    Write-Host "  groups   -> group management audit" -ForegroundColor Cyan
-    Write-Host "  kerberos -> Kerberos audit" -ForegroundColor Yellow
-    exit
+    Write-Host 'Usage: .\Set-DCLogging.ps1 [options]' -ForegroundColor Cyan
+    Write-Host '  -h, --help         Show this help message'
+    Write-Host '  -ShowCurrent       Display current auditpol settings'
+    Write-Host '  -ShowAvailable     List categories and their Event IDs'
+    Write-Host '  -Enable <cats>     Enable categories'
+    Write-Host '  -Disable <cats>    Disable categories'
+    Write-Host '  -WhatIf            Simulate changes' -ForegroundColor DarkGray
+    Write-Host '`nCategories - verbosity & detection focus:' -ForegroundColor Yellow
+    Write-Host '  low           -> low verbosity (essential events)' -ForegroundColor Green
+    Write-Host '  medium        -> medium verbosity (additional events)' -ForegroundColor Yellow
+    Write-Host '  high          -> high verbosity (detailed + object access)' -ForegroundColor Red
+    Write-Host '  accounts      -> account management events' -ForegroundColor Magenta
+    Write-Host '  groups        -> security group management events' -ForegroundColor Cyan
+    Write-Host '  kerberos      -> Kerberos authentication events' -ForegroundColor Yellow
+    Write-Host '  objectaccess  -> directory service access (4662,4663)' -ForegroundColor Blue
+    Write-Host '  policychange  -> audit policy change events (4719)' -ForegroundColor Magenta
 }
 
 function Show-Available {
-    Write-Host "Available categories and Event IDs - verbosity levels:" -ForegroundColor Cyan
+    Write-Host 'Available categories and Event IDs:' -ForegroundColor Cyan
     $cats = Get-Categories
-    foreach ($k in $cats.Keys) {
-        $desc = switch ($k) {
-            'low'      {'(low verbosity)'}
-            'medium'   {'(medium verbosity)'}
-            'high'     {'(high verbosity)'}
-            'accounts' {'(account management)'}
-            'groups'   {'(group management)'}
-            'kerberos' {'(Kerberos audit)'}
-            default    {''}
+    foreach ($category in $cats.Keys) {
+        $desc = switch ($category) {
+            'low'          {'(low verbosity)'}
+            'medium'       {'(medium verbosity)'}
+            'high'         {'(high verbosity + access)'}
+            'accounts'     {'(account management)'}
+            'groups'       {'(security group management)'}
+            'kerberos'     {'(Kerberos)'}
+            'objectaccess' {'(object access)'}
+            'policychange' {'(audit policy change)'}
+            default        {''}
         }
-        Write-Host ("  {0,-8} {1,-18} -> {2}" -f $k, $desc, ($cats[$k].IDs -join ',')) -ForegroundColor $cats[$k].Color
+        Write-Host ("  {0,-12} {1,-20} -> {2}" -f $category, $desc, ($cats[$category].IDs -join ',')) -ForegroundColor $cats[$category].Color
     }
 }
 
+function Get-SubcategoryStatus {
+    param([string]$Guid)
+    $output = auditpol /get /subcategory:$Guid 2>&1
+    if ($output -match 'Success and Failure') { return 'SuccessAndFailure' }
+    elseif ($output -match '\bSuccess\b') { return 'Success' }
+    elseif ($output -match '\bFailure\b') { return 'Failure' }
+    else { return 'NotConfigured' }
+}
+
 function Show-Current {
-    Write-Host "Current audit settings (registry):" -ForegroundColor Cyan
-
-    $regPath = 'HKLM:\System\CurrentControlSet\Control\Lsa'
-    $cats    = Get-Categories
-
-    foreach ($key in $cats.Keys) {
-        $info = $cats[$key]
-        Write-Host "`n$($key):" -ForegroundColor $info.Color
-
-        foreach ($id in $info.IDs) {
-            $map  = Get-AuditMapping -EventId $id
-            $prop = $map.RegistryPath
-            $val  = (Get-ItemProperty -Path $regPath -Name $prop -ErrorAction SilentlyContinue).$prop
-            if ($null -eq $val) { $val = 0 }
-            $state = switch ($val) {
-                0 { 'Disabled' }
-                1 { 'Success' }
-                2 { 'Failure' }
-                3 { 'SuccessAndFailure' }
-                default { 'Unknown' }
-            }
-            Write-Host ("  {0} ({1}): {2}" -f $id, $map.SubCategory, $state)
+    Write-Host 'Current audit settings (auditpol):' -ForegroundColor Cyan
+    $cats = Get-Categories
+    foreach ($category in $cats.Keys) {
+        Write-Host "`n$($category):" -ForegroundColor $cats[$category].Color
+        foreach ($id in $cats[$category].IDs) {
+            $map = Get-AuditMapping -EventId $id
+            $guid = $AdvSubCatGuidMap[$map.RegistryPath]
+            $status = if ($guid) { Get-SubcategoryStatus -Guid $guid } else { 'Unknown' }
+            Write-Host ("  {0} ({1}): {2}" -f $id, $map.SubCategory, $status)
         }
     }
 }
@@ -97,97 +115,83 @@ function Update-Categories {
         [string[]] $Cats,
         [int]      $Value
     )
-
-    # Map RegistryPath to subcategory GUID (language independent)
-    $advSubCatGuidMap = @{  
-        'AuditLogon'                          = '{0CCE9215-69AE-11D9-BED3-505054503030}'
-        'AuditLogoff'                         = '{0CCE9216-69AE-11D9-BED3-505054503030}'
-        'AuditKerberosAuthentication'         = '{0CCE9242-69AE-11D9-BED3-505054503030}'
-        'AuditKerberosServiceTicketOperations'= '{0CCE9240-69AE-11D9-BED3-505054503030}'
-        'AuditKerberosPreAuth'                = '{0CCE923F-69AE-11D9-BED3-505054503030}'
-        'AuditNTLMAuthentication'             = '{0CCE9227-69AE-11D9-BED3-505054503030}'
-        'AuditUserAccountManagement'          = '{0CCE9235-69AE-11D9-BED3-505054503030}'
-        'AuditSecurityGroupManagement'        = '{0CCE9237-69AE-11D9-BED3-505054503030}'
-        'AuditDistributionGroupManagement'    = '{0CCE9238-69AE-11D9-BED3-505054503030}'
-        'AuditApplicationGroupManagement'     = '{0CCE9239-69AE-11D9-BED3-505054503030}'
-        'AuditDirectoryServiceAccess'         = '{0CCE923C-69AE-11D9-BED3-505054503030}'
-        'AuditKDCPolicyChange'                = '{0CCE9230-69AE-11D9-BED3-505054503030}'
-        'AuditKDCService'                     = '{0CCE9230-69AE-11D9-BED3-505054503030}'
-    }
-
-    # Validate categories
-    $catsList = ($Cats -join ',') -split '[, ]+' | % { $_.Trim().ToLowerInvariant() }
-    $all      = Get-Categories
-    $invalid  = $catsList | Where-Object { -not $all.ContainsKey($_) }
+    $catsList = ($Cats -join ',') -split '[, ]+' | ForEach-Object { $_.Trim().ToLower() }
+    $allCats  = Get-Categories
+    $invalid  = $catsList | Where-Object { -not $allCats.ContainsKey($_) }
     if ($invalid) {
         Write-Host "Unknown category(s): $($invalid -join ', ')" -ForegroundColor Red
-        Show-Available; return
+        return
     }
-
-    Import-Module GroupPolicy -ErrorAction Stop
-
     foreach ($cat in $catsList) {
-        $color = $all[$cat].Color
-        foreach ($id in $all[$cat].IDs) {
+        foreach ($id in $allCats[$cat].IDs) {
             $map  = Get-AuditMapping -EventId $id
+            $guid = $AdvSubCatGuidMap[$map.RegistryPath]
             $mode = if ($Value -eq 1) { 'enable' } else { 'disable' }
-
-            if ($PSCmdlet.ShouldProcess("auditpol", "$mode Event $id ($($map.SubCategory))")) {
-                Write-Host "$mode Event $id ($($map.SubCategory))" -ForegroundColor $color
-
-                # Apply advanced audit policy via GUID
-                $guid = $advSubCatGuidMap[$map.RegistryPath]
+            if ($PSCmdlet.ShouldProcess('auditpol', "$mode $($map.SubCategory) ($id)")) {
                 if ($guid) {
-                    & auditpol /set /subcategory:$guid /success:$mode /failure:$mode | Out-Null
-                    Write-Host "Applied auditpol on GUID $guid ($($map.SubCategory)) : $mode" -ForegroundColor $color
-                } else {
-                    & auditpol /set /subcategory:"$($map.SubCategory)" /success:$mode /failure:$mode | Out-Null
-                    Write-Host "Applied auditpol on subcategory '$($map.SubCategory)' : $mode" -ForegroundColor $color
+                    auditpol /set /subcategory:$guid /success:$mode /failure:$mode | Out-Null
+                    Write-Host "$mode $($map.SubCategory) ($id)" -ForegroundColor $allCats[$cat].Color
                 }
             }
         }
     }
-
-    Write-Host "`nApplied categories: $($catsList -join ', ') via auditpol" -ForegroundColor Cyan
-
-    # Force GPO update
-    Invoke-GPUpdate -Force | Out-Null
+    Write-Host "`nApplied categories: $($catsList -join ', ')" -ForegroundColor Cyan
 }
 
 function Get-AuditMapping {
     param([int]$EventId)
-    $mapList = @(    
-        @{Id=4624; SubCategory='Logon';                    RegistryPath='AuditLogon'},
-        @{Id=4625; SubCategory='Logoff';                   RegistryPath='AuditLogoff'},
-        @{Id=4768; SubCategory='Kerberos-TGT Request';     RegistryPath='AuditKDCService'},
-        @{Id=4769; SubCategory='Kerberos-Service Ticket';  RegistryPath='AuditKerberosServiceTicketOperations'},
-        @{Id=4771; SubCategory='Kerberos Pre-auth';        RegistryPath='AuditKerberosPreAuth'},
-        @{Id=4772; SubCategory='Kerberos-TGS Request';     RegistryPath='AuditKDCService'},
-        @{Id=4776; SubCategory='NTLM Authentication';      RegistryPath='AuditNTLMAuthentication'},
-        @{Id=4777; SubCategory='NTLM Auth Failure';        RegistryPath='AuditNTLMAuthentication'},
-        @{Id=4720; SubCategory='User Account Created';     RegistryPath='AuditUserAccountManagement'},
-        @{Id=4722; SubCategory='User Account Enabled';     RegistryPath='AuditUserAccountManagement'},
-        @{Id=4724; SubCategory='Password Reset';           RegistryPath='AuditUserAccountManagement'},
-        @{Id=4725; SubCategory='User Account Disabled';    RegistryPath='AuditUserAccountManagement'},
-        @{Id=4726; SubCategory='User Account Deleted';     RegistryPath='AuditUserAccountManagement'},
-        @{Id=4727; SubCategory='Group Created';            RegistryPath='AuditSecurityGroupManagement'},
-        @{Id=4728; SubCategory='Member Added to Group';    RegistryPath='AuditSecurityGroupManagement'},
-        @{Id=4732; SubCategory='Local Group Add Member';   RegistryPath='AuditSecurityGroupManagement'},
-        @{Id=4756; SubCategory='Universal Group Add';      RegistryPath='AuditDistributionGroupManagement'},
-        @{Id=4757; SubCategory='Member Removed from Group';RegistryPath='AuditDistributionGroupManagement'},
-        @{Id=5136; SubCategory='Directory Service Modify'; RegistryPath='AuditDirectoryServiceAccess'},
-        @{Id=5137; SubCategory='Directory Service Create'; RegistryPath='AuditDirectoryServiceAccess'},
-        @{Id=5138; SubCategory='Directory Service Delete'; RegistryPath='AuditDirectoryServiceAccess'},
-        @{Id=6400; SubCategory='KDC Policy Change';        RegistryPath='AuditKDCPolicyChange'},
-        @{Id=6401; SubCategory='KDC Service Start';        RegistryPath='AuditKDCService'}
+    $mappings = @(
+        @{Id=4624; RegistryPath='AuditLogon';                           SubCategory='Logon'},
+        @{Id=4625; RegistryPath='AuditLogoff';                          SubCategory='Logoff'},
+        @{Id=4768; RegistryPath='AuditKerberosAuthentication';          SubCategory='Kerberos-TGT Request'},
+        @{Id=4769; RegistryPath='AuditKerberosServiceTicketOperations'; SubCategory='Kerberos-Service Ticket'},
+        @{Id=4771; RegistryPath='AuditKerberosPreAuth';                 SubCategory='Kerberos Pre-auth'},
+        @{Id=4772; RegistryPath='AuditKerberosAuthentication';          SubCategory='Kerberos-TGS Request'},
+        @{Id=4776; RegistryPath='AuditNTLMAuthentication';              SubCategory='NTLM Authentication'},
+        @{Id=4777; RegistryPath='AuditNTLMAuthentication';              SubCategory='NTLM Auth Failure'},
+        @{Id=4720; RegistryPath='AuditUserAccountManagement';            SubCategory='User Account Created'},
+        @{Id=4722; RegistryPath='AuditUserAccountManagement';            SubCategory='User Account Enabled'},
+        @{Id=4724; RegistryPath='AuditUserAccountManagement';            SubCategory='Password Reset'},
+        @{Id=4725; RegistryPath='AuditUserAccountManagement';            SubCategory='User Account Disabled'},
+        @{Id=4726; RegistryPath='AuditUserAccountManagement';            SubCategory='User Account Deleted'},
+        @{Id=4727; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Group Created'},
+        @{Id=4728; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Added to Global Group'},
+        @{Id=4729; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Removed from Global Group'},
+        @{Id=4730; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Global Group Deleted'},
+        @{Id=4731; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Local Group Created'},
+        @{Id=4732; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Added to Local Group'},
+        @{Id=4733; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Removed from Local Group'},
+        @{Id=4734; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Local Group Deleted'},
+        @{Id=4735; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Local Group Changed'},
+        @{Id=4737; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Global Group Changed'},
+        @{Id=4754; RegistryPath='AuditDistributionGroupManagement';      SubCategory='Universal Group Created'},
+        @{Id=4755; RegistryPath='AuditDistributionGroupManagement';      SubCategory='Universal Group Changed'},
+        @{Id=4756; RegistryPath='AuditDistributionGroupManagement';      SubCategory='Member Added to Universal Group'},
+        @{Id=4757; RegistryPath='AuditDistributionGroupManagement';      SubCategory='Member Removed from Universal Group'},
+        @{Id=4758; RegistryPath='AuditDistributionGroupManagement';      SubCategory='Universal Group Deleted'},
+        @{Id=5136; RegistryPath='AuditDirectoryServiceChanges';         SubCategory='Directory Service Modify'},
+        @{Id=5137; RegistryPath='AuditDirectoryServiceChanges';         SubCategory='Directory Service Create'},
+        @{Id=5138; RegistryPath='AuditDirectoryServiceChanges';         SubCategory='Directory Service Delete'},
+        @{Id=4662; RegistryPath='AuditDirectoryServiceAccess';          SubCategory='Directory Service Access'},
+        @{Id=4663; RegistryPath='AuditDirectoryServiceChanges';         SubCategory='Directory Service Changes'},
+        @{Id=6400; RegistryPath='AuditKDCPolicyChange';                 SubCategory='KDC Policy Change'},
+        @{Id=6401; RegistryPath='AuditKDCPolicyChange';                 SubCategory='KDC Service Start'},
+        @{Id=4719; RegistryPath='AuditPolicyChange';                    SubCategory='Audit Policy Change'}
     )
-    return ($mapList | Where-Object { $_.Id -eq $EventId })
+    return $mappings | Where-Object { $_.Id -eq $EventId }
 }
 
-# Main
-if      ($Help)          { Show-Help }
-elseif  ($ShowAvailable) { Show-Available }
-elseif  ($ShowCurrent)   { Show-Current }
-elseif  ($Enable)        { Update-Categories -Cats $Enable  -Value 1 }
-elseif  ($Disable)       { Update-Categories -Cats $Disable -Value 0 }
-else                    { Show-Help }
+# Main logic
+if ($Help) {
+    Show-Help
+} elseif ($ShowAvailable) {
+    Show-Available
+} elseif ($ShowCurrent) {
+    Show-Current
+} elseif ($Enable) {
+    Update-Categories -Cats $Enable -Value 1
+} elseif ($Disable) {
+    Update-Categories -Cats $Disable -Value 0
+} else {
+    Show-Help
+}
