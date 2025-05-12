@@ -3,12 +3,11 @@
     DC-LogMaster: Manage and strengthen Domain Controller audit settings
 .DESCRIPTION
     Configures advanced audit policy on a Domain Controller using auditpol with GUIDs,
-    eliminating language/localization issues. Registry writes have been removed; only
-    advanced audit policy via auditpol is used. Show-Current now queries auditpol state.
+    eliminating language/localization issues. Show-Current uses auditpol exclusively.
 .TO DO
     Ensure the GUIDs in $AdvSubCatGuidMap match your environment.
     To export all subcategory GUIDs, run:
-        auditpol /list /subcategory:* /format:csv | Out-File C:\temp\auditpol_subcats.csv -Encoding UTF8
+        auditpol /list /subcategory:* /v | Out-File C:\temp\auditpol_subcats.txt -Encoding UTF8
 #>
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
@@ -54,10 +53,9 @@ function Show-Help {
     Write-Host '  -h, --help         Show this help message'
     Write-Host '  -ShowCurrent       Display current auditpol settings'
     Write-Host '  -ShowAvailable     List categories and their Event IDs'
-    Write-Host '  -Enable <cats>     Enable categories'
-    Write-Host '  -Disable <cats>    Disable categories'
-    Write-Host '  -WhatIf            Simulate changes' -ForegroundColor DarkGray
-    Write-Host '`nCategories - verbosity & detection focus:' -ForegroundColor Yellow
+    Write-Host '  -Enable <cats>     Enable categories (use "all" for all)'
+    Write-Host '  -Disable <cats>    Disable categories (use "all" for all)' -ForegroundColor DarkGray
+    Write-Host 'Categories - verbosity & detection focus:' -ForegroundColor Yellow
     Write-Host '  low           -> low verbosity (essential events)' -ForegroundColor Green
     Write-Host '  medium        -> medium verbosity (additional events)' -ForegroundColor Yellow
     Write-Host '  high          -> high verbosity (detailed + object access)' -ForegroundColor Red
@@ -89,7 +87,7 @@ function Show-Available {
 
 function Get-SubcategoryStatus {
     param([string]$Guid)
-    $output = auditpol /get /subcategory:$Guid 2>&1
+    $output = auditpol /get /subcategory:"$Guid" 2>&1
     if ($output -match 'Success and Failure') { return 'SuccessAndFailure' }
     elseif ($output -match '\bSuccess\b') { return 'Success' }
     elseif ($output -match '\bFailure\b') { return 'Failure' }
@@ -104,7 +102,7 @@ function Show-Current {
         foreach ($id in $cats[$category].IDs) {
             $map = Get-AuditMapping -EventId $id
             $guid = $AdvSubCatGuidMap[$map.RegistryPath]
-            $status = if ($guid) { Get-SubcategoryStatus -Guid $guid } else { 'Unknown' }
+            $status = Get-SubcategoryStatus -Guid $guid
             Write-Host ("  {0} ({1}): {2}" -f $id, $map.SubCategory, $status)
         }
     }
@@ -115,9 +113,14 @@ function Update-Categories {
         [string[]] $Cats,
         [int]      $Value
     )
-    $catsList = ($Cats -join ',') -split '[, ]+' | ForEach-Object { $_.Trim().ToLower() }
     $allCats  = Get-Categories
-    $invalid  = $catsList | Where-Object { -not $allCats.ContainsKey($_) }
+    $catsListRaw = ($Cats -join ',') -split '[, ]+' | ForEach-Object { $_.Trim().ToLower() }
+    if ($catsListRaw -contains 'all') {
+        $catsList = $allCats.Keys
+    } else {
+        $catsList = $catsListRaw
+    }
+    $invalid = $catsList | Where-Object { -not $allCats.ContainsKey($_) }
     if ($invalid) {
         Write-Host "Unknown category(s): $($invalid -join ', ')" -ForegroundColor Red
         return
@@ -128,10 +131,8 @@ function Update-Categories {
             $guid = $AdvSubCatGuidMap[$map.RegistryPath]
             $mode = if ($Value -eq 1) { 'enable' } else { 'disable' }
             if ($PSCmdlet.ShouldProcess('auditpol', "$mode $($map.SubCategory) ($id)")) {
-                if ($guid) {
-                    auditpol /set /subcategory:$guid /success:$mode /failure:$mode | Out-Null
-                    Write-Host "$mode $($map.SubCategory) ($id)" -ForegroundColor $allCats[$cat].Color
-                }
+                auditpol /set /subcategory:"$guid" /success:$mode /failure:$mode | Out-Null
+                Write-Host "$mode $($map.SubCategory) ($id)" -ForegroundColor $allCats[$cat].Color
             }
         }
     }
@@ -160,7 +161,7 @@ function Get-AuditMapping {
         @{Id=4730; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Global Group Deleted'},
         @{Id=4731; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Local Group Created'},
         @{Id=4732; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Added to Local Group'},
-        @{Id=4733; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Removed from Local Group'},
+        @{Id=4733; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Member Removed from Local Group'},
         @{Id=4734; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Local Group Deleted'},
         @{Id=4735; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Local Group Changed'},
         @{Id=4737; RegistryPath='AuditSecurityGroupManagement';          SubCategory='Global Group Changed'},
@@ -175,7 +176,7 @@ function Get-AuditMapping {
         @{Id=4662; RegistryPath='AuditDirectoryServiceAccess';          SubCategory='Directory Service Access'},
         @{Id=4663; RegistryPath='AuditDirectoryServiceChanges';         SubCategory='Directory Service Changes'},
         @{Id=6400; RegistryPath='AuditKDCPolicyChange';                 SubCategory='KDC Policy Change'},
-        @{Id=6401; RegistryPath='AuditKDCPolicyChange';                 SubCategory='KDC Service Start'},
+        @{Id=6401; RegistryPath='AuditKDCPolicyChange';                 SubCategory='KDC Service Start'},
         @{Id=4719; RegistryPath='AuditPolicyChange';                    SubCategory='Audit Policy Change'}
     )
     return $mappings | Where-Object { $_.Id -eq $EventId }
