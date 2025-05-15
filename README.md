@@ -1,10 +1,12 @@
-```
-       |>>>                    |>>>
-       |                        |
-   _  _|_  _                _  _|_  _
-  |;|_|;|_|;|              |;|_|;|_|;|
-  \\.    .  /              \\.    .  /
-   \\:  .  /                \\:  .  /
+# DC-LogMaster
+
+```text
+       |>>>                      |>>>
+       |                         |
+   _   ꓕ   _                 _   ꓕ   _
+  |;|_|;|_|;|               |;|_|;|_|;|
+  \\.    .  /               \\.    .  /
+   \\:  .  /                 \\:  .  /
     ||:   |                   ||:   |
     ||:.  |                   ||:.  |
     ||:  .|                   ||:  .|
@@ -15,8 +17,6 @@
    /||:.  |\\                /||:.  |\\
   /_||::._|_\\              /_||::._|_\\
 ```
-
-# DC-LogMaster
 
 A PowerShell tool to manage and strengthen Domain Controller audit settings.
 
@@ -57,11 +57,13 @@ DC-LogMaster configures advanced audit policies on a Domain Controller using `au
 
 ## Installation
 
-1. Clone or download this repository:  
+1. Clone or download this repository:
+
    ```bash
    git clone https://github.com/0xRD/DC-LogMaster.git
    cd DC-LogMaster
-   ```  
+   ```
+
 2. Open PowerShell as Administrator.
 
 ## Usage
