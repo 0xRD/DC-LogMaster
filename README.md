@@ -55,16 +55,19 @@ This tool facilitates the management of granular audit subcategories critical fo
 **Advanced Audit Policy settings are most commonly and effectively managed via Group Policy Objects (GPOs) in an Active Directory environment.**
 
 *   Settings applied by GPOs will **always override** local audit policy settings configured by `auditpol.exe` (which this script uses for modifications).
-*   This script now attempts to **detect GPOs** that might be configuring Advanced Audit Policy settings.
-    *   If such GPOs are detected, the script will issue a **warning** before you attempt to change local policy settings, as your changes are likely to be ineffective or temporary.
-    *   It is **strongly recommended** to manage audit policies through the identified GPOs for consistency and reliability in a production environment.
-*   Use this script to modify local policies primarily in standalone environments, testing labs, or when you are certain no overriding GPOs are in effect for Advanced Audit Policy.
+*   This script attempts to **detect GPOs** that might be configuring Advanced Audit Policy settings by looking for specific *registry-based configurations* (under `SOFTWARE\Policies\Microsoft\Windows\Audit`) within linked GPOs.
+    *   If such registry-based settings are detected in a GPO, the script will issue a **warning**.
+    *   **Crucially, standard Advanced Audit Policy configurations in GPOs are often managed via `audit.csv` files, not these specific registry keys.** The script's current detection method **will not see `audit.csv`-based configurations directly.**
+    *   Regardless of what this script's limited detection finds, it is **strongly recommended** to manage audit policies through GPOs in a production environment, as GPO-defined settings (whether registry or `audit.csv`-based) will take precedence.
+*   Use this script to modify local policies primarily in standalone environments, testing labs, or when you are certain no overriding GPOs are in effect for Advanced Audit Policy. The script will always warn about potential GPO overrides before making changes.
 
 ## Key Features
 
-- **View Current Audit Policy**: Displays current audit settings. Tries to show a detailed view of all subcategories from `auditpol /get /category:* /r`, falling back to a predefined category view if needed.
-- **Modify Audit Policy**: Enable or disable audit settings for predefined logical groups of event IDs (categories) or for all categories.
-- **GPO Conflict Detection**: Attempts to identify if Advanced Audit Policy is managed by GPOs and warns the user.
+- **View Current Audit Policy**: Displays the *effective local audit settings* on the machine using `auditpol /get /category:* /r`. This output reflects the combined result of local settings and any applied GPOs.
+- **Modify Audit Policy**: Enable or disable audit settings locally for predefined logical groups of event IDs (categories) or for all categories using `auditpol.exe`.
+- **GPO Conflict Detection & Warnings**:
+    - Attempts to identify GPOs that configure Advanced Audit Policy via specific *registry keys*.
+    - Provides strong warnings that GPO settings (including standard `audit.csv`-based configurations which this script does not directly parse) will override any local changes made by this script.
 - **Export/Import Audit Policy**:
     -   Export the current local audit policy settings to a file using `auditpol /backup`.
     -   Import audit policy settings from a file using `auditpol /restore`. (Subject to GPO override).
@@ -93,7 +96,7 @@ This tool facilitates the management of granular audit subcategories critical fo
 ## Usage
 
 ```powershell
-.\Set-DCLogging.ps1 [options]
+.\DC-LogMaster.ps1 [options]
 ```
 
 ## Options

@@ -180,9 +180,17 @@ function Get-AdvancedAuditPolicyGPOs {
         Write-Log -Message "GPO Debug: Using reliable domain FQDN '$reliableDomainFQDN' for GPO analysis." -Level DEBUG
 
         $dcDN = $currentDCComputer.DistinguishedName
-        $dcParentContainerDN = Split-Path -Path $dcDN -Parent
+        Write-Log -Message "GPO Debug: Value of `$dcDN before Split-Path: '$($dcDN)' (Type: $($dcDN.GetType().FullName))" -Level DEBUG
+
+        # Attempt to ensure dcDN is a clean string for Split-Path
+        $cleanDcDN = [string]$dcDN.Trim()
+        Write-Log -Message "GPO Debug: Value of `$cleanDcDN after Trim: '$($cleanDcDN)'" -Level DEBUG
+
+        $dcParentContainerDN = Split-Path -Path $cleanDcDN -Parent
+        Write-Log -Message "GPO Debug: Value of `$dcParentContainerDN after Split-Path: '$($dcParentContainerDN)'" -Level DEBUG
+
         if (-not $dcParentContainerDN) {
-             Write-Log -Message "Could not determine parent container DN for DC from DN '$dcDN'. This is unexpected. Skipping GPO check for specific container." -Level WARN
+             Write-Log -Message "Could not determine parent container DN for DC from original DN '$dcDN' (cleaned as '$cleanDcDN'). This is unexpected. Skipping GPO check for specific container." -Level WARN
         }
 
         $gpoLinksToProcess = [System.Collections.Generic.List[Microsoft.GroupPolicy.GpoLink]]::new()
@@ -235,8 +243,13 @@ function Get-AdvancedAuditPolicyGPOs {
                     }
                 }
             } catch {
-                # Log specific error if Get-GPRegistryValue fails for a GPO
-                Write-Log -Message "Could not analyze GPO '$gpoName' (ID: $($gpoLink.Id)). Error: $($_.Exception.Message). This GPO might be corrupt, inaccessible, or the domain '$reliableDomainFQDN' might be incorrect for this GPO context." -Level WARN
+                $errMsg = $_.Exception.Message
+                if ($errMsg -like "*The following key is not valid for a Group Policy registry setting*" -or $errMsg -like "*Cannot find the registry key*") {
+                    Write-Log -Message "GPO Analysis: GPO '$gpoName' (ID: $($gpoLink.Id)) does not appear to configure Advanced Audit Policy via the specific registry path '$AdvancedAuditPolicyRegistryPath'. This is expected if policies are set via audit.csv. Message: $errMsg" -Level DEBUG
+                } else {
+                    # Log other errors as warnings
+                    Write-Log -Message "Could not fully analyze GPO '$gpoName' (ID: $($gpoLink.Id)) for registry settings at '$AdvancedAuditPolicyRegistryPath'. Error: $errMsg. This GPO might be corrupt, inaccessible, or the domain '$reliableDomainFQDN' might be incorrect for this GPO context." -Level WARN
+                }
             }
         }
 
@@ -489,11 +502,16 @@ function Get-EffectiveAuditPolicyDetailed {
 function Show-Current {
     Write-Log -Message "Displaying current audit settings." -Level INFO
 
+    # Existing GPO warning if specific registry-based GPOs were detected
+    if ($PSBoundParameters.ContainsKey('ShowCurrent') -and $detectedGPOs) { # Check if $detectedGPOs is from a run where ShowCurrent was the operation
+        Write-Log -Message "Warning user that displayed local settings from ShowCurrent may be overridden by GPOs: $($detectedGPOs -join ', ')" -Level WARN
+        Write-Warning "GPO DETECTION: This script found indications that the following GPOs might be configuring Advanced Audit Policy via specific registry keys: $($detectedGPOs -join ', '). Settings from these GPOs will override local settings."
+    }
+
     $detailedPolicies = Get-EffectiveAuditPolicyDetailed
 
     if ($detailedPolicies) {
-        Write-Host "`n--- Detailed Audit Policy Configuration (from auditpol /get /category:* /r) ---" -ForegroundColor Cyan
-        # Format-Table might be too wide, let's select key fields and display them
+        Write-Host "`n--- Detailed Audit Policy Configuration (Effective Local Settings from 'auditpol /get /category:* /r') ---" -ForegroundColor Cyan
         $detailedPolicies | ForEach-Object {
             $inclusion = $_."Inclusion Setting".Trim()
             $subcategoryName = $_.Subcategory.Trim()
@@ -505,10 +523,13 @@ function Show-Current {
 
             Write-Host ("  Subcategory: {0,-45} Status: {1}" -f $subcategoryName, $status)
         }
-        Write-Log -Message "Displayed detailed audit policy settings." -Level INFO
+        Write-Log -Message "Displayed detailed audit policy settings (effective local settings)." -Level INFO
+
+        Write-Warning "IMPORTANT: The settings displayed above are the *effective local audit policies* currently active on this machine. In a domain environment, these settings are typically managed and enforced by Group Policy Objects (GPOs). After a 'gpupdate', these settings will reflect the GPO configuration. This script's GPO detection (which checks for specific registry keys) may not identify all GPO configurations, especially those set via 'audit.csv' files within GPOs (the standard for Advanced Audit Policy)."
+
     } else {
         Write-Log -Message "Could not retrieve detailed audit policy. Falling back to script-defined category check." -Level WARN
-        Write-Warning "Could not retrieve detailed audit policy using 'auditpol /get /category:* /r'. Falling back to checking script-defined categories only."
+        Write-Warning "Could not retrieve detailed audit policy using 'auditpol /get /category:* /r'. Falling back to checking script-defined categories only. Effective GPO settings may not be fully represented."
 
         Write-Host "`n--- Audit Policy Configuration (based on script categories) ---" -ForegroundColor Cyan
         $cats = Get-Categories
@@ -701,28 +722,33 @@ elseif ($PSBoundParameters.ContainsKey('ShowAvailable')) {
 }
 elseif ($PSBoundParameters.ContainsKey('ShowCurrent')) {
     Write-Log -Message "Operation: ShowCurrent" -Level INFO
-    if ($detectedGPOs) {
-        Write-Log -Message "Warning user that displayed local settings from ShowCurrent may be overridden by GPOs: $($detectedGPOs -join ', ')" -Level WARN
-        Write-Warning "One or more GPOs appear to be configuring Advanced Audit Policy: $($detectedGPOs -join ', '). Settings displayed below are local effective settings but may be overridden by these GPOs."
-    }
+    # The specific GPO warning for ShowCurrent is now handled inside Show-Current function itself for better context
     Show-Current
 }
 elseif ($PSBoundParameters.ContainsKey('Enable')) {
     Write-Log -Message "Operation: Enable categories '$($Enable -join ', ')'" -Level INFO
+    $baseWarning = "CRITICAL ADVISORY: Advanced Audit Policies are typically managed by Group Policy in a domain. "
     if ($detectedGPOs) {
-        $warningMessage = "CRITICAL: One or more GPOs appear to be configuring Advanced Audit Policy: $($detectedGPOs -join ', '). Applying local changes with this script via 'auditpol.exe' will likely be overridden by these GPOs and may not persist or take effect as expected. It is strongly recommended to manage these audit settings via the identified GPO(s)."
-        Write-Log -Message $warningMessage -Level WARN
-        Write-Warning $warningMessage
+        $gpoSpecificWarning = "This script detected potential GPO involvement for Advanced Audit Policy based on registry key checks: $($detectedGPOs -join ', '). "
+        $warningMessage = $baseWarning + $gpoSpecificWarning + "Changes made locally with this script WILL LIKELY BE OVERRIDDEN by these GPOs and may not persist or take effect as intended. It is STRONGLY RECOMMENDED to manage audit settings via the identified GPO(s)."
+    } else {
+        $warningMessage = $baseWarning + "While this script's registry-based GPO check did not find specific GPOs, other GPOs (especially those using standard Advanced Audit Policy configuration via 'audit.csv') WILL STILL OVERRIDE local changes. Applying local changes with 'auditpol.exe' is very likely to be ineffective or temporary. MANAGE AUDIT SETTINGS VIA GPO."
     }
+    Write-Log -Message $warningMessage -Level WARN
+    Write-Warning $warningMessage
     Update-Categories -Cats $Enable -Value 1
 }
 elseif ($PSBoundParameters.ContainsKey('Disable')) {
     Write-Log -Message "Operation: Disable categories '$($Disable -join ', ')'" -Level INFO
+    $baseWarning = "CRITICAL ADVISORY: Advanced Audit Policies are typically managed by Group Policy in a domain. "
     if ($detectedGPOs) {
-        $warningMessage = "CRITICAL: One or more GPOs appear to be configuring Advanced Audit Policy: $($detectedGPOs -join ', '). Applying local changes with this script via 'auditpol.exe' will likely be overridden by these GPOs and may not persist or take effect as expected. It is strongly recommended to manage these audit settings via the identified GPO(s)."
-        Write-Log -Message $warningMessage -Level WARN
-        Write-Warning $warningMessage
+        $gpoSpecificWarning = "This script detected potential GPO involvement for Advanced Audit Policy based on registry key checks: $($detectedGPOs -join ', '). "
+        $warningMessage = $baseWarning + $gpoSpecificWarning + "Changes made locally with this script WILL LIKELY BE OVERRIDDEN by these GPOs and may not persist or take effect as intended. It is STRONGLY RECOMMENDED to manage audit settings via the identified GPO(s)."
+    } else {
+        $warningMessage = $baseWarning + "While this script's registry-based GPO check did not find specific GPOs, other GPOs (especially those using standard Advanced Audit Policy configuration via 'audit.csv') WILL STILL OVERRIDE local changes. Applying local changes with 'auditpol.exe' is very likely to be ineffective or temporary. MANAGE AUDIT SETTINGS VIA GPO."
     }
+    Write-Log -Message $warningMessage -Level WARN
+    Write-Warning $warningMessage
     Update-Categories -Cats $Disable -Value 0
 }
 elseif ($PSBoundParameters.ContainsKey('ImportPolicy')) {
